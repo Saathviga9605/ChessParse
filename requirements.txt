@@ -1,0 +1,9 @@
+opencv-python
+pytesseract
+python-chess
+Pillow
+regex
+numpy
+pdf2image
+# Optional for HEIC/HEIF decoding support:
+# pillow-heif
