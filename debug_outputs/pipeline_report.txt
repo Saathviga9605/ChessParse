@@ -1,0 +1,7 @@
+timestamp=2026-05-21T00:56:43
+input=input_samples\IMG_2480.jpg
+pages=1
+avg_ocr_conf=29.61
+validation_conf=0.00
+moves_accepted=0
+moves_skipped=60

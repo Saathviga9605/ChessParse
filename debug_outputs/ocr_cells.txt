@@ -1,0 +1,56 @@
+IMG_2480	r0	c0	conf=25.0	psm=13	text=a	raw=a
+IMG_2480	r0	c1	conf=25.0	psm=13	text=a	raw=a
+IMG_2480	r1	c0	conf=15.0	psm=13	text=ca	raw=ca
+IMG_2480	r1	c1	conf=0.0	psm=13	text=fBacx	raw=fBacx
+IMG_2480	r2	c0	conf=8.0	psm=13	text=eae	raw=eae
+IMG_2480	r2	c1	conf=0.0	psm=13	text=Bbe	raw=Bbe
+IMG_2480	r3	c0	conf=23.0	psm=13	text=ae	raw=ae
+IMG_2480	r3	c1	conf=17.0	psm=13	text=eed	raw=eed
+IMG_2480	r4	c0	conf=23.0	psm=13	text=Qe	raw=Qe
+IMG_2480	r4	c1	conf=0.0	psm=13	text=KKfe	raw=KKfe
+IMG_2480	r5	c0	conf=11.0	psm=13	text=eae	raw=eae
+IMG_2480	r5	c1	conf=0.0	psm=13	text=feae	raw=feae
+IMG_2480	r6	c0	conf=12.0	psm=13	text=ae	raw=ae
+IMG_2480	r6	c1	conf=0.0	psm=7	text=Reeee	raw=Reeee
+IMG_2480	r7	c0	conf=33.0	psm=13	text=ae	raw=ae
+IMG_2480	r7	c1	conf=0.0	psm=13	text=feg2xh3	raw=feg2xh3
+IMG_2480	r8	c0	conf=23.5	psm=7	text=Ka- Be	raw=Ka- Be
+IMG_2480	r8	c1	conf=27.7	psm=7	text=== a ee	raw=== a ee
+IMG_2480	r9	c0	conf=7.5	psm=7	text=58 Bee	raw=58 Bee
+IMG_2480	r9	c1	conf=19.0	psm=13	text=a	raw=a
+IMG_2480	r10	c0	conf=26.0	psm=13	text=eae	raw=eae
+IMG_2480	r10	c1	conf=39.0	psm=7	text=ae	raw=ae
+IMG_2480	r11	c0	conf=34.0	psm=13	text=aa	raw=aa
+IMG_2480	r11	c1	conf=38.0	psm=13	text=ae	raw=ae
+IMG_2480	r12	c0	conf=23.0	psm=13	text=ee	raw=ee
+IMG_2480	r12	c1	conf=49.0	psm=13	text=Regd	raw=Regd
+IMG_2480	r13	c0	conf=34.0	psm=13	text=a	raw=a
+IMG_2480	r13	c1	conf=27.0	psm=13	text=ae	raw=ae
+IMG_2480	r14	c0	conf=51.0	psm=13	text=ha	raw=ha
+IMG_2480	r14	c1	conf=52.0	psm=13	text=ae	raw=ae
+IMG_2480	r15	c0	conf=21.0	psm=13	text=ee	raw=ee
+IMG_2480	r15	c1	conf=33.0	psm=13	text=a	raw=a
+IMG_2480	r16	c0	conf=20.0	psm=13	text=ae	raw=ae
+IMG_2480	r16	c1	conf=29.0	psm=13	text=ee	raw=ee
+IMG_2480	r17	c0	conf=43.0	psm=13	text=ee	raw=ee
+IMG_2480	r17	c1	conf=41.0	psm=13	text=ae	raw=ae
+IMG_2480	r18	c0	conf=20.0	psm=7	text=e a	raw=e a
+IMG_2480	r18	c1	conf=27.0	psm=13	text=ee	raw=ee
+IMG_2480	r19	c0	conf=47.0	psm=13	text=ha	raw=ha
+IMG_2480	r19	c1	conf=19.0	psm=13	text=Reed	raw=Reed
+IMG_2480	r20	c0	conf=13.0	psm=13	text=ae	raw=ae
+IMG_2480	r20	c1	conf=32.0	psm=13	text=Re	raw=Re
+IMG_2480	r21	c0	conf=47.0	psm=13	text=fe	raw=fe
+IMG_2480	r21	c1	conf=40.0	psm=13	text=Ra	raw=Ra
+IMG_2480	r22	c0	conf=29.0	psm=13	text=a	raw=a
+IMG_2480	r22	c1	conf=40.0	psm=7	text=ae a 7	raw=ae a 7
+IMG_2480	r23	c0	conf=37.0	psm=13	text=ae	raw=ae
+IMG_2480	r23	c1	conf=40.0	psm=7	text=ae	raw=ae
+IMG_2480	r24	c0	conf=32.0	psm=7	text=73 ee	raw=73 ee
+IMG_2480	r24	c1	conf=30.0	psm=13	text=ee	raw=ee
+IMG_2480	r25	c0	conf=18.0	psm=13	text=a	raw=a
+IMG_2480	r25	c1	conf=33.0	psm=13	text=ae	raw=ae
+IMG_2480	r26	c0	conf=31.0	psm=13	text=2	raw=2
+IMG_2480	r26	c1	conf=47.0	psm=13	text=ae	raw=ae
+IMG_2480	r27	c0	conf=30.0	psm=13	text=ha	raw=ha
+IMG_2480	r27	c1	conf=39.0	psm=13	text=x	raw=x

@@ -5,6 +5,7 @@ from difflib import SequenceMatcher
 from typing import List, Optional, Set, Tuple
 
 import chess
+import regex as re
 
 
 @dataclass
@@ -30,18 +31,20 @@ OCR_CHAR_MAP = {
     "g": "9",
 }
 
+PIECE_LETTERS = {"K", "Q", "R", "B", "N"}
+
 
 def _clean_token(token: str) -> str:
-    t = token.strip()
-    t = t.replace("0-0-0", "O-O-O").replace("0-0", "O-O")
-    t = t.replace("o-o-o", "O-O-O").replace("o-o", "O-O")
-    t = t.replace(" ", "")
-    t = t.replace("!", "").replace("?", "")
-    t = t.replace("×", "x")
-    return t
+    cleaned = token.strip().strip(".,;:[](){}")
+    cleaned = cleaned.replace("×", "x")
+    cleaned = cleaned.replace(" ", "")
+    cleaned = cleaned.replace("!", "").replace("?", "")
+    cleaned = cleaned.replace("0-0-0", "O-O-O").replace("0-0", "O-O")
+    cleaned = cleaned.replace("o-o-o", "O-O-O").replace("o-o", "O-O")
+    return cleaned
 
 
-def _generate_variants(token: str, max_variants: int = 80) -> List[str]:
+def _generate_variants(token: str, max_variants: int = 120) -> List[str]:
     token = _clean_token(token)
     variants: Set[str] = {token}
 
@@ -50,34 +53,35 @@ def _generate_variants(token: str, max_variants: int = 80) -> List[str]:
     if token in {"0-0-0", "O-0-0", "0-O-O", "o-o-o", "O-O-O"}:
         variants.add("O-O-O")
 
-    # Single-character substitutions for common OCR confusions.
+    if token and token[0].lower() in {"k", "q", "r", "b", "n"}:
+        variants.add(token[0].upper() + token[1:])
+
+    promotion_match = re.match(r"^([a-h]x?[a-h]?[18])([qrbnQRBN])$", token)
+    if promotion_match:
+        variants.add(f"{promotion_match.group(1)}={promotion_match.group(2).upper()}")
+
     chars = list(token)
-    for i, ch in enumerate(chars):
-        repl = OCR_CHAR_MAP.get(ch)
-        if repl is not None:
-            alt = chars.copy()
-            alt[i] = repl
-            variants.add("".join(alt))
+    for index, char in enumerate(chars):
+        replacement = OCR_CHAR_MAP.get(char)
+        if replacement is not None:
+            candidate = chars.copy()
+            candidate[index] = replacement
+            variants.add("".join(candidate))
 
-    # Inverse map for cases where a digit should be a letter in castling patterns.
-    inverse_map = {v: k for k, v in OCR_CHAR_MAP.items()}
-    for i, ch in enumerate(chars):
-        if ch in inverse_map:
-            alt = chars.copy()
-            alt[i] = inverse_map[ch]
-            variants.add("".join(alt))
+    inverse_map = {value: key for key, value in OCR_CHAR_MAP.items()}
+    for index, char in enumerate(chars):
+        replacement = inverse_map.get(char)
+        if replacement is not None:
+            candidate = chars.copy()
+            candidate[index] = replacement
+            variants.add("".join(candidate))
 
-    # Common piece letter confusion.
-    piece_fixups = {"H": "N", "A": "R", "P": "B"}
-    for i, ch in enumerate(chars):
-        if ch in piece_fixups:
-            alt = chars.copy()
-            alt[i] = piece_fixups[ch]
-            variants.add("".join(alt))
+    if len(token) >= 2 and token[0] in {"h", "k", "q", "r", "b", "n"}:
+        variants.add(token[0].upper() + token[1:])
 
     if len(variants) > max_variants:
-        return list(sorted(variants))[:max_variants]
-    return list(sorted(variants))
+        return sorted(variants)[:max_variants]
+    return sorted(variants)
 
 
 def _similarity(a: str, b: str) -> float:
@@ -113,10 +117,11 @@ def validate_and_correct_moves(tokens: List[str]) -> ValidationResult:
     failed_tokens: List[str] = []
     confidence_points: List[float] = []
 
-    for idx, raw_token in enumerate(tokens, start=1):
+    for index, raw_token in enumerate(tokens, start=1):
         token = _clean_token(raw_token)
+        if not token:
+            continue
 
-        # 1) Direct parse.
         direct = _try_parse_candidate(board, token)
         if direct is not None:
             move = board.parse_san(direct)
@@ -125,35 +130,34 @@ def validate_and_correct_moves(tokens: List[str]) -> ValidationResult:
             confidence_points.append(1.0)
             continue
 
-        # 2) Variant parse.
-        parsed_variant: Optional[str] = None
+        corrected: Optional[str] = None
         for variant in _generate_variants(token):
-            parsed_variant = _try_parse_candidate(board, variant)
-            if parsed_variant is not None:
+            corrected = _try_parse_candidate(board, variant)
+            if corrected is not None:
+                if variant != token:
+                    corrections.append(f"Move {index}: '{raw_token}' -> '{variant}'")
+                    warnings.append(f"Corrected OCR move at ply {index}: {raw_token} -> {variant}")
                 break
 
-        if parsed_variant is not None:
-            move = board.parse_san(parsed_variant)
+        if corrected is not None:
+            move = board.parse_san(corrected)
             board.push(move)
-            san_moves.append(parsed_variant)
-            corrections.append(f"Move {idx}: '{raw_token}' -> '{parsed_variant}' (variant correction)")
-            warnings.append(f"Corrected OCR move at ply {idx}: {raw_token} -> {parsed_variant}")
-            confidence_points.append(0.8)
+            san_moves.append(corrected)
+            confidence_points.append(0.82)
             continue
 
-        # 3) Fuzzy match against legal SAN options.
-        legal_san = [board.san(m) for m in board.legal_moves]
-        best, score = _best_legal_match(token, legal_san)
-        if best is not None and score >= 0.68:
+        legal_san = [board.san(move) for move in board.legal_moves]
+        best_match, score = _best_legal_match(token, legal_san)
+        if best_match is not None and score >= 0.68:
             try:
-                move = board.parse_san(best)
+                move = board.parse_san(best_match)
                 board.push(move)
-                san_moves.append(best)
+                san_moves.append(best_match)
                 corrections.append(
-                    f"Move {idx}: '{raw_token}' -> '{best}' (fuzzy legality match, score={score:.2f})"
+                    f"Move {index}: '{raw_token}' -> '{best_match}' (fuzzy legality match, score={score:.2f})"
                 )
                 warnings.append(
-                    f"Fuzzy-corrected move at ply {idx}: {raw_token} -> {best} (score={score:.2f})"
+                    f"Fuzzy-corrected move at ply {index}: {raw_token} -> {best_match} (score={score:.2f})"
                 )
                 confidence_points.append(max(0.5, min(score, 0.79)))
                 continue
@@ -161,15 +165,15 @@ def validate_and_correct_moves(tokens: List[str]) -> ValidationResult:
                 pass
 
         failed_tokens.append(raw_token)
-        warnings.append(f"Could not validate token at ply {idx}: '{raw_token}'. Skipping.")
+        warnings.append(f"Could not validate token at ply {index}: '{raw_token}'. Skipping.")
         confidence_points.append(0.0)
 
-    overall_conf = float(sum(confidence_points) / len(confidence_points)) if confidence_points else 0.0
+    overall_confidence = float(sum(confidence_points) / len(confidence_points)) if confidence_points else 0.0
 
     return ValidationResult(
         san_moves=san_moves,
         warnings=warnings,
         corrections=corrections,
         failed_tokens=failed_tokens,
-        confidence=overall_conf,
+        confidence=overall_confidence,
     )

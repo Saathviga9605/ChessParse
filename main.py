@@ -5,10 +5,10 @@ import sys
 from pathlib import Path
 from typing import List
 
-from ocr_engine import extract_text_from_image
+from ocr_engine import OCRTableResult, extract_scoresheet_moves
 from parser import parse_moves_from_text
 from pgn_exporter import export_pgn
-from preprocess import preprocess_image
+from preprocess import PreprocessResult, preprocess_image
 from utils import (
     default_output_path,
     ensure_dir,
@@ -38,14 +38,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--debug-dir",
-        default=None,
+        default="debug_outputs",
         help="Optional directory for debug artifacts (preprocess images, OCR text logs).",
     )
     parser.add_argument(
         "--psm",
         type=int,
-        default=6,
-        help="Tesseract page segmentation mode (default: 6).",
+        default=7,
+        help="Preferred Tesseract page segmentation mode (the pipeline still tries multiple modes).",
     )
     parser.add_argument("--event", default="OCR Reconstructed Game", help="PGN Event header")
     parser.add_argument("--site", default="Local", help="PGN Site header")
@@ -80,37 +80,53 @@ def run_pipeline(args: argparse.Namespace) -> int:
     all_raw_text: List[str] = []
     all_clean_text: List[str] = []
     ocr_conf_values: List[float] = []
+    all_cells_log: List[str] = []
 
     for image, label in zip(images, labels):
-        processed, metrics = preprocess_image(
+        preprocess_result: PreprocessResult = preprocess_image(
             image,
             debug_dir=debug_dir,
             prefix=label,
         )
+        metrics = preprocess_result.metrics
         print(
-            f"[INFO] Preprocessed {label}: skew={metrics['estimated_skew_angle']:.2f} deg, "
-            f"width {int(metrics['input_width'])}->{int(metrics['output_width'])}"
+            f"[INFO] Preprocessed {label}: table={int(metrics['table_width'])}x{int(metrics['table_height'])}, "
+            f"page={int(metrics['resized_width'])}x{int(metrics['resized_height'])}, "
+            f"bbox=({int(metrics['table_x'])}, {int(metrics['table_y'])})"
         )
 
         try:
-            ocr_result = extract_text_from_image(processed, psm=args.psm)
+            ocr_result: OCRTableResult = extract_scoresheet_moves(
+                preprocess_result,
+                psm_candidates=(args.psm, 7, 13),
+                debug_dir=debug_dir,
+                prefix=label,
+            )
         except Exception as exc:
             print(f"[ERROR] OCR failed on {label}: {exc}")
             print(f"[HINT] {environment_hint_for_tesseract()}")
             return 3
 
-        ocr_conf_values.append(ocr_result.confidence)
-        all_raw_text.append(ocr_result.raw_text)
-        all_clean_text.append(ocr_result.cleaned_text)
+        ocr_conf_values.append(ocr_result.average_confidence)
+        all_raw_text.append("\n".join(cell.raw_text for cell in ocr_result.cells if cell.raw_text.strip()))
+        all_clean_text.append(ocr_result.assembled_text)
 
-        print(
-            f"[INFO] OCR {label}: confidence={ocr_result.confidence:.1f}, "
-            f"words={ocr_result.words_detected}"
-        )
+        print(f"[INFO] OCR {label}: average_cell_confidence={ocr_result.average_confidence:.1f}, cells={len(ocr_result.cells)}")
+        for cell in ocr_result.cells:
+            if cell.text.strip() or cell.confidence > 0:
+                print(
+                    f"[CELL] r{cell.row_index:02d} c{cell.col_index:02d} conf={cell.confidence:5.1f} psm={cell.psm:02d} text={cell.text!r}"
+                )
+                all_cells_log.append(
+                    f"{label}\tr{cell.row_index}\tc{cell.col_index}\tconf={cell.confidence:.1f}\tpsm={cell.psm}\ttext={cell.text}\traw={cell.raw_text.strip()}"
+                )
+
+        for warn in preprocess_result.warnings:
+            print(f"[WARN] {warn}")
         for warn in ocr_result.warnings:
             print(f"[WARN] {warn}")
 
-    merged_text = "\n".join(all_clean_text)
+    merged_text = "\n".join(text for text in all_clean_text if text.strip())
     parse_result = parse_moves_from_text(merged_text)
 
     for warn in parse_result.warnings:
@@ -153,6 +169,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
     if debug_dir is not None:
         write_text_file(debug_dir / "ocr_raw_text.txt", "\n\n---\n\n".join(all_raw_text))
         write_text_file(debug_dir / "ocr_clean_text.txt", merged_text)
+        write_text_file(debug_dir / "ocr_cells.txt", "\n".join(all_cells_log))
         write_text_file(
             debug_dir / "pipeline_report.txt",
             "\n".join(
