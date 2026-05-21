@@ -4,7 +4,7 @@ This project converts handwritten or printed chess scoresheet images (and option
 
 It is fully local and uses only practical Python computer vision/OCR libraries:
 - OpenCV
-- pytesseract
+- PaddleOCR
 - python-chess
 - Pillow
 - regex
@@ -23,7 +23,7 @@ It is fully local and uses only practical Python computer vision/OCR libraries:
   - adaptive thresholding
   - deskew
   - upscaling
-- OCR extraction with chess-notation-focused Tesseract config
+- OCR extraction with PaddleOCR and angle classification
 - Regex-driven move token parsing
 - OCR error correction heuristics
 - Move-by-move legality validation using `python-chess`
@@ -52,7 +52,7 @@ project/
 ## Requirements
 
 - Python 3.11+
-- Tesseract OCR installed on your system
+- PaddleOCR and PaddlePaddle installed in your Python environment
 
 ## Setup (Windows)
 
@@ -70,19 +70,21 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-### 3) Install Tesseract OCR
+### 3) Install PaddleOCR
 
-1. Download and install Tesseract for Windows (commonly from UB Mannheim builds).
-2. Typical install path:
-   - `C:\Program Files\Tesseract-OCR\tesseract.exe`
-3. Add Tesseract folder to PATH (System Environment Variables), or set path at runtime.
-4. Verify:
+1. Install the Python packages:
 
 ```powershell
-tesseract --version
+pip install paddleocr paddlepaddle
 ```
 
-If `tesseract` is not found, restart terminal after updating PATH.
+2. Verify that PaddleOCR imports correctly:
+
+```powershell
+python -c "from paddleocr import PaddleOCR; print('ok')"
+```
+
+If PaddleOCR needs to download models on first run, allow network access.
 
 ## Optional: PDF Support Notes
 
@@ -149,7 +151,6 @@ python main.py --input input_samples\sample.jpg --white "Player A" --black "Play
 - `--output`: explicit PGN output path
 - `--output-dir`: output directory when `--output` is omitted (default: `sample_outputs`)
 - `--debug-dir`: save preprocessing images and OCR logs
-- `--psm`: Tesseract page segmentation mode (default: 6)
 - `--event`, `--site`, `--white`, `--black`: PGN header fields
 
 ## Pipeline Overview
@@ -159,8 +160,8 @@ python main.py --input input_samples\sample.jpg --white "Player A" --black "Play
 2. Preprocess each page:
    - grayscale -> CLAHE -> denoise -> adaptive threshold -> deskew -> upscale
 3. OCR extraction:
-   - Tesseract with a chess-character whitelist
-   - confidence estimation from OCR data
+   - PaddleOCR with angle classification enabled
+   - confidence estimation from OCR results
 4. Parse move tokens:
    - regex extraction of move numbers, SAN-like moves, and game result tokens
 5. Validate and correct:
@@ -219,11 +220,11 @@ Typical terminal output includes:
 
 ## Troubleshooting
 
-### `Tesseract executable not found`
+### PaddleOCR import or model errors
 
-- Ensure Tesseract is installed
-- Add install directory to PATH
-- Restart terminal
+- Ensure `paddleocr` and `paddlepaddle` are installed in the active environment
+- Allow the first run to download English OCR models
+- Check network access if model download fails
 
 ### Empty or very low-quality OCR output
 

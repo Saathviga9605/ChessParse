@@ -1,26 +1,21 @@
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
-import pytesseract
-from pytesseract import Output
+import regex as re
 
 from preprocess import PreprocessResult, crop_region
 from utils import ensure_dir, normalize_ocr_text
 
 
-WHITELIST = "abcdefghKQRBNxO-+=#0123456789"
-
-
 @dataclass
-class OCRCellResult:
+class OCRRowResult:
     row_index: int
-    col_index: int
     bbox: Tuple[int, int, int, int]
     text: str
     confidence: float
@@ -30,7 +25,7 @@ class OCRCellResult:
 
 @dataclass
 class OCRTableResult:
-    cells: List[OCRCellResult]
+    rows: List[OCRRowResult]
     assembled_text: str
     average_confidence: float
     warnings: List[str]
@@ -38,22 +33,23 @@ class OCRTableResult:
     table_bbox: Tuple[int, int, int, int]
 
 
-def _build_tesseract_config(psm: int) -> str:
-    return f"--oem 3 --psm {psm} -c tessedit_char_whitelist={WHITELIST} -c preserve_interword_spaces=1"
+@lru_cache(maxsize=1)
+def _get_paddle_ocr():
+    try:
+        from paddleocr import PaddleOCR
+    except Exception as exc:
+        raise RuntimeError(
+            "PaddleOCR is not installed. Install 'paddleocr' and 'paddlepaddle' in the active environment."
+        ) from exc
 
-
-def _compute_confidence(data: Dict[str, List[str]]) -> float:
-    conf_values: List[float] = []
-    for value_text in data.get("conf", []):
-        try:
-            value = float(value_text)
-        except Exception:
-            continue
-        if value >= 0:
-            conf_values.append(value)
-    if not conf_values:
-        return 0.0
-    return float(sum(conf_values) / len(conf_values))
+    return PaddleOCR(
+        use_angle_cls=True,
+        lang="en",
+        use_gpu=False,
+        show_log=False,
+        det=True,
+        rec=True,
+    )
 
 
 def _ensure_gray(image: np.ndarray) -> np.ndarray:
@@ -67,16 +63,74 @@ def _blue_ink_enhancement(color_image: np.ndarray) -> np.ndarray:
         return np.array([], dtype=np.uint8)
 
     hsv = cv2.cvtColor(color_image, cv2.COLOR_BGR2HSV)
-    blue_mask = cv2.inRange(hsv, (80, 18, 25), (145, 255, 255))
+    blue_mask = cv2.inRange(hsv, (78, 16, 18), (145, 255, 255))
 
     blue, green, red = cv2.split(color_image)
-    dominance = cv2.subtract(blue, cv2.addWeighted(green, 0.5, red, 0.5, 0.0))
+    dominance = blue.astype(np.int16) - ((green.astype(np.int16) + red.astype(np.int16)) // 2)
+    dominance = np.clip(dominance, 0, 255).astype(np.uint8)
     dominance = cv2.GaussianBlur(dominance, (3, 3), 0)
-    dominance = cv2.normalize(dominance, None, 0, 255, cv2.NORM_MINMAX)
 
-    masked = cv2.bitwise_and(dominance, dominance, mask=blue_mask)
-    masked = cv2.equalizeHist(masked)
-    return masked.astype(np.uint8)
+    ink = np.full_like(dominance, 255)
+    ink_mask = blue_mask > 0
+    ink[ink_mask] = 255 - dominance[ink_mask]
+    ink = cv2.medianBlur(ink, 3)
+    return ink
+
+
+def _trim_inner_border(image: np.ndarray, border: int = 12) -> np.ndarray:
+    if image.size == 0:
+        return image
+    height, width = image.shape[:2]
+    if height <= border * 2 or width <= border * 2:
+        return image.copy()
+    return image[border : height - border, border : width - border].copy()
+
+
+def _resize_for_row_ocr(image: np.ndarray, scale: float = 3.0) -> np.ndarray:
+    if image.size == 0:
+        return image
+    return cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+
+
+def _clahe_and_denoise(gray: np.ndarray) -> np.ndarray:
+    if gray.size == 0:
+        return gray
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
+    gray = cv2.fastNlMeansDenoising(gray, None, h=5, templateWindowSize=7, searchWindowSize=21)
+    return gray
+
+
+def _adaptive_threshold(gray: np.ndarray) -> np.ndarray:
+    if gray.size == 0:
+        return gray
+    return cv2.adaptiveThreshold(
+        gray,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        31,
+        7,
+    )
+
+
+def _remove_gentle_grid_lines(binary: np.ndarray) -> np.ndarray:
+    if binary.size == 0:
+        return binary
+
+    inverted = cv2.bitwise_not(binary)
+    height, width = binary.shape[:2]
+
+    horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(10, width // 60), 1))
+    vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(10, height // 60)))
+
+    horizontal = cv2.morphologyEx(inverted, cv2.MORPH_OPEN, horizontal_kernel)
+    vertical = cv2.morphologyEx(inverted, cv2.MORPH_OPEN, vertical_kernel)
+    line_mask = cv2.bitwise_or(horizontal, vertical)
+
+    cleaned = binary.copy()
+    cleaned[line_mask > 0] = 255
+    return cleaned
 
 
 def _group_consecutive(indices: np.ndarray) -> List[np.ndarray]:
@@ -164,304 +218,259 @@ def _equal_intervals(size: int, parts: int) -> List[Tuple[int, int]]:
     return intervals
 
 
-def _crop_cell(image: np.ndarray, row_interval: Tuple[int, int], col_interval: Tuple[int, int]) -> np.ndarray:
-    y1, y2 = row_interval
-    x1, x2 = col_interval
-    return image[y1:y2, x1:x2].copy()
+def _normalize_move_like_text(text: str) -> str:
+    if not text:
+        return text
+
+    cleaned = normalize_ocr_text(text)
+    cleaned = cleaned.replace("×", "x")
+    cleaned = re.sub(r"\b0-0-0\b", "O-O-O", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b0-0\b", "O-O", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bo-o-o\b", "O-O-O", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bo-o\b", "O-O", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b0o\b", "O-O", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\boo\b", "O-O", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b([KQRBN])([a-h])([sS])\b", lambda m: f"{m.group(1).upper()}{m.group(2)}5", cleaned)
+    cleaned = re.sub(r"\bBbs\b", "Bb5", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\bBbS\b", "Bb5", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\b([a-h])([sS])\b", lambda m: f"{m.group(1)}5", cleaned)
+    cleaned = re.sub(r"\b([a-h])([lI])\b", lambda m: f"{m.group(1)}1", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
 
 
-def _trim_to_ink(gray: np.ndarray) -> np.ndarray:
-    if gray.size == 0:
-        return gray
-
-    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
-    _, ink_mask = cv2.threshold(blurred, 190, 255, cv2.THRESH_BINARY_INV)
-    coords = cv2.findNonZero(ink_mask)
-    if coords is None:
-        _, ink_mask = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        coords = cv2.findNonZero(ink_mask)
-    if coords is None:
-        return gray
-
-    x, y, w, h = cv2.boundingRect(coords)
-    pad = 4
-    left = max(0, x - pad)
-    top = max(0, y - pad)
-    right = min(gray.shape[1], x + w + pad)
-    bottom = min(gray.shape[0], y + h + pad)
-    return gray[top:bottom, left:right].copy()
-
-
-def _resize_and_pad(gray: np.ndarray) -> np.ndarray:
-    if gray.size == 0:
-        return gray
-
-    if gray.shape[1] < 180:
-        scale = max(2.5, 240.0 / float(max(1, gray.shape[1])))
-        gray = cv2.resize(gray, (int(gray.shape[1] * scale), int(gray.shape[0] * scale)), interpolation=cv2.INTER_CUBIC)
-
-    return cv2.copyMakeBorder(gray, 12, 12, 12, 12, cv2.BORDER_CONSTANT, value=255)
-
-
-def _prepare_cell_variants(gray_cell: np.ndarray, color_cell: np.ndarray | None = None) -> List[np.ndarray]:
-    base_images: List[np.ndarray] = []
-
-    gray = _ensure_gray(gray_cell)
-    if gray.size > 0:
-        base_images.append(gray)
-
-    if color_cell is not None and color_cell.size > 0:
-        blue = _blue_ink_enhancement(color_cell)
-        if blue.size > 0:
-            base_images.append(blue)
-
-    if not base_images:
-        return []
-
+def _build_row_ocr_inputs(row_color: np.ndarray, row_gray: np.ndarray) -> List[np.ndarray]:
     variants: List[np.ndarray] = []
-    for base in base_images:
-        current = base.copy()
-        if float(np.mean(current)) < 127.0:
-            current = cv2.bitwise_not(current)
-        current = _trim_to_ink(current)
-        if current.size == 0:
-            continue
 
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        current = clahe.apply(current)
-        current = cv2.fastNlMeansDenoising(current, None, h=6, templateWindowSize=7, searchWindowSize=21)
-        current = _resize_and_pad(current)
+    if row_color is not None and row_color.size > 0 and len(row_color.shape) == 3:
+        blue = _blue_ink_enhancement(row_color)
+        if blue.size > 0:
+            blue = _trim_inner_border(blue, border=12)
+            blue = _clahe_and_denoise(blue)
+            blue = _resize_for_row_ocr(blue, scale=3.0)
+            if blue.size > 0:
+                blue = _adaptive_threshold(blue)
+                blue = _remove_gentle_grid_lines(blue)
+                variants.append(blue)
 
-        if current.size == 0:
-            continue
+    gray = _ensure_gray(row_gray)
+    if gray.size > 0:
+        if float(np.mean(gray)) < 127.0:
+            gray = cv2.bitwise_not(gray)
+        gray = _trim_inner_border(gray, border=12)
+        gray = _clahe_and_denoise(gray)
+        gray = _resize_for_row_ocr(gray, scale=3.0)
+        if gray.size > 0:
+            gray = _adaptive_threshold(gray)
+            gray = _remove_gentle_grid_lines(gray)
+            variants.append(gray)
 
-        adaptive = cv2.adaptiveThreshold(
-            current,
-            255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY,
-            31,
-            7,
-        )
-        _, otsu = cv2.threshold(current, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        variants.extend([current, otsu, adaptive])
-
-    cleaned_variants: List[np.ndarray] = []
-    for variant in variants:
-        if variant.size == 0:
-            continue
-        if float(np.mean(variant)) < 127.0:
-            variant = cv2.bitwise_not(variant)
-        cleaned_variants.append(variant)
-    return cleaned_variants
+    return variants
 
 
-def _ocr_image(image: np.ndarray, psm: int, timeout: float = 0.8) -> Tuple[str, float, int, str]:
-    config = _build_tesseract_config(psm)
+def _ocr_with_paddle(image: np.ndarray) -> Tuple[str, float, int, List[Tuple[str, float]]]:
+    engine = _get_paddle_ocr()
     try:
-        data = pytesseract.image_to_data(image, config=config, output_type=Output.DICT, timeout=timeout)
-    except pytesseract.TesseractNotFoundError as exc:
-        raise RuntimeError("Tesseract executable not found. Install Tesseract and add it to PATH.") from exc
-    except RuntimeError:
-        return "", 0.0, 0, ""
-    except Exception as exc:
-        return "", 0.0, 0, ""
+        result = engine.ocr(image, cls=True)
+    except Exception:
+        return "", 0.0, 0, []
 
-    raw_parts = [str(text).strip() for text in data.get("text", []) if str(text).strip()]
-    raw_text = " ".join(raw_parts)
-    confidence = _compute_confidence(data)
-    cleaned_text = normalize_ocr_text(raw_text)
-    words_detected = len([text for text in data.get("text", []) if str(text).strip()])
-    return raw_text, confidence, words_detected, cleaned_text
+    if not result:
+        return "", 0.0, 0, []
+
+    lines = result[0] if isinstance(result, list) and len(result) == 1 and isinstance(result[0], list) else result
+    parsed_lines: List[Tuple[float, float, str, float]] = []
+
+    for line in lines:
+        if not line or len(line) < 2:
+            continue
+        box = line[0]
+        text_conf = line[1]
+        if not text_conf or len(text_conf) < 2:
+            continue
+        text = str(text_conf[0]).strip()
+        try:
+            conf = float(text_conf[1]) * 100.0 if float(text_conf[1]) <= 1.0 else float(text_conf[1])
+        except Exception:
+            conf = 0.0
+        if not text:
+            continue
+        left = min(point[0] for point in box)
+        top = min(point[1] for point in box)
+        parsed_lines.append((left, top, text, conf))
+
+    if not parsed_lines:
+        return "", 0.0, 0, []
+
+    parsed_lines.sort(key=lambda item: (item[1], item[0]))
+    raw_text = " ".join(item[2] for item in parsed_lines)
+    confidence_values = [item[3] for item in parsed_lines if item[3] > 0]
+    confidence = float(sum(confidence_values) / len(confidence_values)) if confidence_values else 0.0
+    return raw_text, confidence, len(parsed_lines), [(item[2], item[3]) for item in parsed_lines]
 
 
-def _choose_best_cell_ocr(binary_cell: np.ndarray, gray_cell: np.ndarray, psm_candidates: Sequence[int]) -> Tuple[str, float, int, str, int]:
-    best_raw = ""
-    best_cleaned = ""
-    best_confidence = 0.0
-    best_words = 0
-    best_psm = int(psm_candidates[0]) if psm_candidates else 7
-
-    candidate_images: List[np.ndarray] = []
-    if binary_cell.size:
-        candidate_images.extend(_prepare_cell_variants(binary_cell))
-    if gray_cell.size:
-        candidate_images.extend(_prepare_cell_variants(gray_cell))
-
+def _choose_best_row_ocr(row_color: np.ndarray, row_gray: np.ndarray) -> Tuple[str, float, int, str]:
+    candidate_images = _build_row_ocr_inputs(row_color, row_gray)
     if not candidate_images:
-        return "", 0.0, 0, "", best_psm
+        return "", 0.0, 0, ""
 
-    attempts = 0
-    for image in candidate_images:
-        for psm in psm_candidates:
-            attempts += 1
-            if attempts > 8:
-                break
-            if image.size == 0:
-                continue
-            raw_text, confidence, words_detected, cleaned_text = _ocr_image(image, int(psm))
-            score = (confidence, float(len(cleaned_text.strip())))
-            best_score = (best_confidence, float(len(best_cleaned.strip())))
-            if score > best_score:
-                best_raw = raw_text
-                best_cleaned = cleaned_text
-                best_confidence = confidence
-                best_words = words_detected
-                best_psm = int(psm)
-            if best_confidence >= 55.0 and best_cleaned.strip():
-                return best_raw, best_confidence, best_words, best_cleaned, best_psm
+    best_raw = ""
+    best_text = ""
+    best_confidence = 0.0
+    best_segments = 0
 
-        if attempts > 8:
+    for image in candidate_images[:2]:
+        raw_text, confidence, segment_count, _ = _ocr_with_paddle(image)
+        cleaned_text = _normalize_move_like_text(raw_text)
+        score = (confidence, float(len(cleaned_text)))
+        best_score = (best_confidence, float(len(best_text)))
+        if score > best_score:
+            best_raw = raw_text
+            best_text = cleaned_text
+            best_confidence = confidence
+            best_segments = segment_count
+
+        if best_confidence >= 65.0 and best_text.strip():
             break
 
-    return best_raw, best_confidence, best_words, best_cleaned, best_psm
+    return best_raw, best_confidence, best_segments, best_text
 
 
 def _render_visualization(
     table_gray: np.ndarray,
-    cells: List[OCRCellResult],
+    rows: List[OCRRowResult],
     output_dir: str | Path,
     prefix: str,
 ) -> str:
     ensure_dir(output_dir)
     canvas = cv2.cvtColor(table_gray, cv2.COLOR_GRAY2BGR)
 
-    for cell in cells:
-        x1, y1, x2, y2 = cell.bbox
-        if cell.text.strip():
-            color = (0, 180, 0) if cell.confidence >= 60 else (0, 165, 255) if cell.confidence >= 35 else (0, 0, 255)
+    for row in rows:
+        x1, y1, x2, y2 = row.bbox
+        if row.text.strip():
+            color = (0, 180, 0) if row.confidence >= 60 else (0, 165, 255) if row.confidence >= 35 else (0, 0, 255)
         else:
             color = (160, 160, 160)
         cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 1)
-        label = f"{cell.row_index},{cell.col_index}:{cell.confidence:.0f}"
+        label = f"r{row.row_index:02d}:{row.confidence:.0f}"
         cv2.putText(canvas, label, (x1 + 2, max(12, y1 + 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1, cv2.LINE_AA)
-        if cell.text.strip():
-            snippet = cell.text.strip()[:14]
+        if row.text.strip():
+            snippet = row.text.strip()[:36]
             cv2.putText(canvas, snippet, (x1 + 2, min(canvas.shape[0] - 4, y2 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1, cv2.LINE_AA)
 
-    output_path = Path(output_dir) / f"{prefix}_ocr_visualization.png"
+    output_path = Path(output_dir) / f"{prefix}_row_ocr_visualization.png"
     cv2.imwrite(str(output_path), canvas)
     return str(output_path)
 
 
-def _assemble_text(cells: List[OCRCellResult]) -> str:
-    rows: Dict[int, List[OCRCellResult]] = defaultdict(list)
-    for cell in cells:
-        rows[cell.row_index].append(cell)
-
-    lines: List[str] = []
-    for row_index in sorted(rows):
-        ordered = sorted(rows[row_index], key=lambda item: item.col_index)
-        row_text = " ".join(cell.text for cell in ordered if cell.text.strip())
-        if row_text.strip():
-            lines.append(row_text.strip())
+def _assemble_text(rows: List[OCRRowResult]) -> str:
+    ordered_rows = sorted(rows, key=lambda item: item.row_index)
+    lines = [row.text.strip() for row in ordered_rows if row.text.strip()]
     return "\n".join(lines)
 
 
 def extract_scoresheet_moves(
     preprocess_result: PreprocessResult,
-    psm_candidates: Sequence[int] | None = None,
     debug_dir: str | Path | None = None,
     prefix: str = "img",
 ) -> OCRTableResult:
     warnings: List[str] = []
-    psm_list = list(dict.fromkeys(int(psm) for psm in (psm_candidates or (7, 8, 13, 6))))
-    if not psm_list:
-        psm_list = [7, 8, 13, 6]
 
     table_gray = preprocess_result.table_gray
     table_color = preprocess_result.table_color
     table_cleaned = preprocess_result.table_cleaned
-    table_horizontal = crop_region(preprocess_result.horizontal_lines, preprocess_result.table_bbox, pad=6)
-    table_vertical = crop_region(preprocess_result.vertical_lines, preprocess_result.table_bbox, pad=6)
 
+    table_horizontal = crop_region(preprocess_result.horizontal_lines, preprocess_result.table_bbox, pad=6)
     row_centers = _detect_line_centers(table_horizontal, "horizontal", threshold_ratio=0.30)
-    col_centers = _detect_line_centers(table_vertical, "vertical", threshold_ratio=0.18)
 
     height, width = table_cleaned.shape[:2]
-    row_intervals = _build_intervals(row_centers, height, min_span=max(18, height // 90), margin=2)
-    col_intervals = _build_intervals(col_centers, width, min_span=max(24, width // 10), margin=2)
+    row_intervals = _build_intervals(row_centers, height, min_span=max(20, height // 70), margin=2)
 
     if len(row_intervals) < 2:
         warnings.append("Could not detect enough row separators; using equal-height fallback rows.")
-        row_count = max(8, height // 52)
+        row_count = max(8, height // 48)
         row_intervals = _equal_intervals(height, row_count)
 
-    if len(col_intervals) < 2:
-        warnings.append("Could not detect enough column separators; using three fallback columns.")
-        col_intervals = _equal_intervals(width, 3)
+    rows: List[OCRRowResult] = []
+    row_debug_dir = None
+    if debug_dir is not None:
+        row_debug_dir = Path(debug_dir) / "rows"
+        ensure_dir(row_debug_dir)
 
-    cells: List[OCRCellResult] = []
     for row_index, row_interval in enumerate(row_intervals):
-        for col_index, col_interval in enumerate(col_intervals):
-            if len(col_intervals) >= 3 and col_index == 0:
-                continue
-            y1, y2 = row_interval
-            x1, x2 = col_interval
-            binary_cell = _crop_cell(table_cleaned, row_interval, col_interval)
-            gray_cell = _crop_cell(table_gray, row_interval, col_interval)
-            color_cell = _crop_cell(table_color, row_interval, col_interval) if table_color.size else None
+        top, bottom = row_interval
+        row_gray = table_gray[top:bottom, :].copy()
+        row_color = table_color[top:bottom, :].copy() if table_color.size else None
+        row_thresholded = table_cleaned[top:bottom, :].copy()
 
-            if binary_cell.size == 0 and gray_cell.size == 0 and (color_cell is None or color_cell.size == 0):
-                continue
+        if row_gray.size == 0:
+            continue
 
-            ink_ratio = float(np.mean(binary_cell < 245))
-            if ink_ratio < 0.002:
-                cells.append(
-                    OCRCellResult(
-                        row_index=row_index,
-                        col_index=col_index,
-                        bbox=(x1, y1, x2, y2),
-                        text="",
-                        confidence=0.0,
-                        raw_text="",
-                        psm=psm_list[0],
-                    )
-                )
-                continue
+        inner_pad = 14
+        if row_gray.shape[1] > inner_pad * 2:
+            row_gray = row_gray[:, inner_pad : row_gray.shape[1] - inner_pad].copy()
+            row_thresholded = row_thresholded[:, inner_pad : row_thresholded.shape[1] - inner_pad].copy()
+            if row_color is not None and row_color.size:
+                row_color = row_color[:, inner_pad : row_color.shape[1] - inner_pad].copy()
 
-            raw_text, confidence, _, cleaned_text, best_psm = _choose_best_cell_ocr(
-                binary_cell if binary_cell.size else gray_cell,
-                gray_cell,
-                psm_list,
-            )
+        if row_debug_dir is not None:
+            cv2.imwrite(str(row_debug_dir / f"{prefix}_row_{row_index:02d}_crop.png"), row_gray)
+            cv2.imwrite(str(row_debug_dir / f"{prefix}_row_{row_index:02d}_thresholded.png"), row_thresholded)
+            if row_color is not None and row_color.size:
+                cv2.imwrite(str(row_debug_dir / f"{prefix}_row_{row_index:02d}_color.png"), row_color)
 
-            if color_cell is not None and color_cell.size:
-                color_raw, color_confidence, _, color_cleaned, color_psm = _choose_best_cell_ocr(
-                    color_cell,
-                    gray_cell,
-                    psm_list,
-                )
-                if (color_confidence, len(color_cleaned.strip())) > (confidence, len(cleaned_text.strip())):
-                    raw_text, confidence, cleaned_text, best_psm = color_raw, color_confidence, color_cleaned, color_psm
-            cells.append(
-                OCRCellResult(
+        ink_ratio = float(np.mean(row_thresholded < 245)) if row_thresholded.size else 0.0
+        if ink_ratio < 0.001:
+            rows.append(
+                OCRRowResult(
                     row_index=row_index,
-                    col_index=col_index,
-                    bbox=(x1, y1, x2, y2),
-                    text=cleaned_text,
-                    confidence=confidence,
-                    raw_text=raw_text,
-                    psm=best_psm,
+                    bbox=(0, top, width, bottom),
+                    text="",
+                    confidence=0.0,
+                    raw_text="",
+                    psm=8,
                 )
             )
+            continue
 
-    if not cells:
-        warnings.append("No OCR cells were extracted from the detected scoresheet table.")
+        raw_text, confidence, segments, cleaned_text = _choose_best_row_ocr(
+            row_color if row_color is not None and row_color.size else row_gray,
+            row_gray,
+        )
 
-    assembled_text = _assemble_text(cells)
-    positive_confidences = [cell.confidence for cell in cells if cell.text.strip() and cell.confidence > 0]
-    if positive_confidences:
-        average_confidence = float(sum(positive_confidences) / len(positive_confidences))
-    else:
-        average_confidence = 0.0
+        rows.append(
+            OCRRowResult(
+                row_index=row_index,
+                bbox=(0, top, width, bottom),
+                text=cleaned_text,
+                confidence=confidence,
+                raw_text=raw_text,
+                psm=8 if segments else 7,
+            )
+        )
+
+        if row_debug_dir is not None:
+            ocr_input_name = f"{prefix}_row_{row_index:02d}_ocr_input.png"
+            best_inputs = _build_row_ocr_inputs(
+                row_color if row_color is not None and row_color.size else row_gray,
+                row_gray,
+            )
+            if best_inputs:
+                cv2.imwrite(str(row_debug_dir / ocr_input_name), best_inputs[0])
+
+    if not rows:
+        warnings.append("No OCR rows were extracted from the detected scoresheet table.")
+
+    assembled_text = _assemble_text(rows)
+    positive_confidences = [row.confidence for row in rows if row.text.strip() and row.confidence > 0]
+    average_confidence = float(sum(positive_confidences) / len(positive_confidences)) if positive_confidences else 0.0
 
     visualization_path: Optional[str] = None
     if debug_dir is not None:
-        visualization_path = _render_visualization(table_gray, cells, debug_dir, prefix)
+        visualization_path = _render_visualization(table_gray, rows, debug_dir, prefix)
 
     return OCRTableResult(
-        cells=cells,
+        rows=rows,
         assembled_text=assembled_text,
         average_confidence=average_confidence,
         warnings=warnings,

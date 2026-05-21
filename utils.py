@@ -162,10 +162,10 @@ def timestamp_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def environment_hint_for_tesseract() -> str:
+def environment_hint_for_ocr() -> str:
     if os.name == "nt":
         return (
-            "On Windows, set TESSDATA_PREFIX or ensure tesseract.exe is installed and in PATH. "
-            "Typical path: C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+            "Install paddleocr and paddlepaddle in the active environment. "
+            "If model download fails, allow PaddleOCR to fetch its English models or pre-download them."
         )
-    return "Ensure tesseract is installed and available in PATH."
+    return "Install paddleocr and paddlepaddle, and ensure the environment can download PaddleOCR models if needed."

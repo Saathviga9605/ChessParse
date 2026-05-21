@@ -1,0 +1,28 @@
+IMG_2480	r0	conf=33.8	psm=7	text=1 1 a =	raw=1 1 a =
+IMG_2480	r2	conf=1.0	psm=8	text=ee	raw=ee
+IMG_2480	r3	conf=33.0	psm=7	text=eae	raw=eae
+IMG_2480	r4	conf=17.1	psm=7	text=eh Oe Oeeaeee BN Qa ee ee	raw=eh Oe Oeeaeee BN Qa ee ee
+IMG_2480	r5	conf=22.0	psm=8	text=a	raw=a
+IMG_2480	r6	conf=14.0	psm=8	text=Od	raw=Od
+IMG_2480	r7	conf=29.0	psm=8	text=gee	raw=gee
+IMG_2480	r8	conf=16.0	psm=8	text=ae	raw=ae
+IMG_2480	r9	conf=16.0	psm=8	text=a	raw=a
+IMG_2480	r10	conf=22.0	psm=8	text=ae	raw=ae
+IMG_2480	r11	conf=6.0	psm=8	text=a	raw=a
+IMG_2480	r12	conf=20.0	psm=8	text=a	raw=a
+IMG_2480	r13	conf=12.1	psm=7	text=Oee ee ee ee ea Oba ee eea- aN gabe	raw=Oee ee ee ee ea Oba ee eea- aN gabe
+IMG_2480	r14	conf=30.0	psm=8	text=Ne	raw=Ne
+IMG_2480	r15	conf=21.0	psm=8	text=a	raw=a
+IMG_2480	r16	conf=29.0	psm=8	text=a	raw=a
+IMG_2480	r17	conf=24.0	psm=8	text=a	raw=a
+IMG_2480	r18	conf=12.4	psm=7	text=ee eee ee ee ee eee ON ee BON	raw=ee eee ee ee ee eee ON ee BON
+IMG_2480	r19	conf=18.0	psm=8	text=eee	raw=eee
+IMG_2480	r20	conf=18.0	psm=8	text=a	raw=a
+IMG_2480	r21	conf=22.0	psm=8	text=eg	raw=eg
+IMG_2480	r22	conf=20.4	psm=7	text=e a eee eee ae Bee = ee ee aN ee Oe	raw=e a eee eee ae Bee = ee ee aN ee Oe
+IMG_2480	r23	conf=20.0	psm=8	text=age	raw=age
+IMG_2480	r24	conf=32.0	psm=8	text=ee	raw=ee
+IMG_2480	r25	conf=21.0	psm=8	text=ge	raw=ge
+IMG_2480	r26	conf=19.0	psm=7	text=ee = ae ee eb	raw=ee = ae ee eb
+IMG_2480	r27	conf=36.0	psm=8	text=ge	raw=ge
+IMG_2480	r28	conf=9.0	psm=8	text=ec	raw=ec

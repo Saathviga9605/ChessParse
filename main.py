@@ -12,7 +12,7 @@ from preprocess import PreprocessResult, preprocess_image
 from utils import (
     default_output_path,
     ensure_dir,
-    environment_hint_for_tesseract,
+    environment_hint_for_ocr,
     format_moves_for_console,
     load_images_from_input,
     timestamp_iso,
@@ -41,12 +41,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="debug_outputs",
         help="Optional directory for debug artifacts (preprocess images, OCR text logs).",
     )
-    parser.add_argument(
-        "--psm",
-        type=int,
-        default=7,
-        help="Preferred Tesseract page segmentation mode (the pipeline still tries multiple modes).",
-    )
     parser.add_argument("--event", default="OCR Reconstructed Game", help="PGN Event header")
     parser.add_argument("--site", default="Local", help="PGN Site header")
     parser.add_argument("--white", default="?", help="PGN White header")
@@ -70,8 +64,8 @@ def run_pipeline(args: argparse.Namespace) -> int:
         images, labels, load_warnings = load_images_from_input(input_path)
     except Exception as exc:
         print(f"[ERROR] Failed to load input: {exc}")
-        if "tesseract" in str(exc).lower() or "pdf" in str(exc).lower():
-            print(f"[HINT] {environment_hint_for_tesseract()}")
+        if "paddle" in str(exc).lower() or "ocr" in str(exc).lower() or "pdf" in str(exc).lower():
+            print(f"[HINT] {environment_hint_for_ocr()}")
         return 2
 
     for warning in load_warnings:
@@ -80,7 +74,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
     all_raw_text: List[str] = []
     all_clean_text: List[str] = []
     ocr_conf_values: List[float] = []
-    all_cells_log: List[str] = []
+    all_rows_log: List[str] = []
 
     for image, label in zip(images, labels):
         preprocess_result: PreprocessResult = preprocess_image(
@@ -98,27 +92,24 @@ def run_pipeline(args: argparse.Namespace) -> int:
         try:
             ocr_result: OCRTableResult = extract_scoresheet_moves(
                 preprocess_result,
-                psm_candidates=(args.psm, 7, 13),
                 debug_dir=debug_dir,
                 prefix=label,
             )
         except Exception as exc:
             print(f"[ERROR] OCR failed on {label}: {exc}")
-            print(f"[HINT] {environment_hint_for_tesseract()}")
+            print(f"[HINT] {environment_hint_for_ocr()}")
             return 3
 
         ocr_conf_values.append(ocr_result.average_confidence)
-        all_raw_text.append("\n".join(cell.raw_text for cell in ocr_result.cells if cell.raw_text.strip()))
+        all_raw_text.append("\n".join(row.raw_text for row in ocr_result.rows if row.raw_text.strip()))
         all_clean_text.append(ocr_result.assembled_text)
 
-        print(f"[INFO] OCR {label}: average_cell_confidence={ocr_result.average_confidence:.1f}, cells={len(ocr_result.cells)}")
-        for cell in ocr_result.cells:
-            if cell.text.strip() or cell.confidence > 0:
-                print(
-                    f"[CELL] r{cell.row_index:02d} c{cell.col_index:02d} conf={cell.confidence:5.1f} psm={cell.psm:02d} text={cell.text!r}"
-                )
-                all_cells_log.append(
-                    f"{label}\tr{cell.row_index}\tc{cell.col_index}\tconf={cell.confidence:.1f}\tpsm={cell.psm}\ttext={cell.text}\traw={cell.raw_text.strip()}"
+        print(f"[INFO] OCR {label}: average_row_confidence={ocr_result.average_confidence:.1f}, rows={len(ocr_result.rows)}")
+        for row in ocr_result.rows:
+            if row.text.strip() or row.confidence > 0:
+                print(f"[ROW] r{row.row_index:02d} conf={row.confidence:5.1f} text={row.text!r}")
+                all_rows_log.append(
+                    f"{label}\tr{row.row_index}\tconf={row.confidence:.1f}\ttext={row.text}\traw={row.raw_text.strip()}"
                 )
 
         for warn in preprocess_result.warnings:
@@ -169,7 +160,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
     if debug_dir is not None:
         write_text_file(debug_dir / "ocr_raw_text.txt", "\n\n---\n\n".join(all_raw_text))
         write_text_file(debug_dir / "ocr_clean_text.txt", merged_text)
-        write_text_file(debug_dir / "ocr_cells.txt", "\n".join(all_cells_log))
+        write_text_file(debug_dir / "ocr_rows.txt", "\n".join(all_rows_log))
         write_text_file(
             debug_dir / "pipeline_report.txt",
             "\n".join(

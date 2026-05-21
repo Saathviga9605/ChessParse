@@ -132,14 +132,11 @@ def detect_table_lines(binary: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.n
     inverted = cv2.bitwise_not(binary)
     height, width = binary.shape[:2]
 
-    horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(25, width // 28), 1))
-    vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(25, height // 24)))
+    horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(18, width // 45), 1))
+    vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(18, height // 40)))
 
     horizontal = cv2.morphologyEx(inverted, cv2.MORPH_OPEN, horizontal_kernel)
     vertical = cv2.morphologyEx(inverted, cv2.MORPH_OPEN, vertical_kernel)
-
-    horizontal = cv2.dilate(horizontal, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 1)), iterations=1)
-    vertical = cv2.dilate(vertical, cv2.getStructuringElement(cv2.MORPH_RECT, (1, 3)), iterations=1)
 
     line_mask = cv2.bitwise_or(horizontal, vertical)
     return horizontal, vertical, line_mask
@@ -169,10 +166,10 @@ def preprocess_image(
     horizontal_lines, vertical_lines, line_mask = detect_table_lines(thresholded)
     table_bbox = detect_table_bbox(line_mask, thresholded.shape, warnings)
 
-    table_color = crop_region(resized_color, table_bbox, pad=6)
-    table_gray = crop_region(sharpened, table_bbox, pad=6)
-    table_thresholded = crop_region(thresholded, table_bbox, pad=6)
-    table_line_mask = crop_region(line_mask, table_bbox, pad=6)
+    table_color = crop_region(resized_color, table_bbox, pad=2)
+    table_gray = crop_region(sharpened, table_bbox, pad=2)
+    table_thresholded = crop_region(thresholded, table_bbox, pad=2)
+    table_line_mask = crop_region(line_mask, table_bbox, pad=2)
     table_cleaned = remove_table_lines(table_thresholded, table_line_mask)
 
     metrics["input_width"] = float(image.shape[1])
